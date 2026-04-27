@@ -1,0 +1,19 @@
+{
+  "pool_x_min": -0.5,
+  "pool_x_max": 25.5,
+  "pool_y_min": -0.5,
+  "pool_y_max": 27.0,
+  "pool_z_min": -3.0,
+  "pool_z_max": 3.0,
+  "min_quality": 30,
+  "max_speed": 3.5,
+  "teleport_passes": 3,
+  "median_window": 5,
+  "resample_freq_ms": 100,
+  "max_interp_gap": 2.0,
+  "do_quality_filter": true,
+  "do_bounds_filter": true,
+  "do_teleport_filter": true,
+  "do_smooth": true,
+  "do_resample": true
+}
