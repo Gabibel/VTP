@@ -11,16 +11,23 @@ Les parametres du terrain (dimensions, marges) et du traitement (seuils,
 fenetres) sont configurables en ligne de commande ou via un fichier de
 configuration JSON.
 
+Orientation du terrain (cf. Figure 2 du cahier des charges) :
+  - Axe X (0-25 m) : longueur du terrain, buts aux extremites X
+  - Axe Y (0-26 m) : largeur du terrain + marges (terrain joue : 3-23 m)
+  - But gauche : X ~ 0,  centre Y ~ 13 m
+  - But droit  : X ~ 25, centre Y ~ 13 m
+
+Zones officielles (depuis chaque but sur X) :
+  - Zone des 2 m       : 0-2 m et 23-25 m
+  - Zone attaque/def   : 2-6 m et 19-23 m
+  - Zone de transition : 6-19 m (13 m au centre)
+
 Usage basique :
-    python traitement_uwb.py --input t1.csv --output t1_clean.csv
+    python traitement_uwb.py --input t1.csv --output t1_clean.xlsx
 
-Usage avec parametres :
-    python traitement_uwb.py --input t1.csv --output t1_clean.csv \\
-        --quality 40 --speed 3.0 --median-window 7
-
-Usage avec fichier de config :
-    python traitement_uwb.py --input t1.csv --output t1_clean.csv \\
-        --config config_piscine.json
+Usage avec fichier joueurs :
+    python traitement_uwb.py --input t1.csv --output t1_clean.xlsx \\
+        --players players.json
 
 Usage pour traiter plusieurs fichiers :
     python traitement_uwb.py --input t1.csv t2.csv t3.csv --output-dir ./clean/
@@ -34,6 +41,17 @@ import os
 import sys
 from dataclasses import dataclass, asdict, field
 from typing import List, Optional
+
+
+# =========================================================================
+# PERIODES DES MATCHS (date -> configuration)
+# =========================================================================
+
+MATCH_PERIODS = {
+    "2026-01-13": {"n_periods": 3, "duration_s": 1200},  # 3 x 20 min
+    "2026-01-20": {"n_periods": 4, "duration_s": 720},   # 4 x 12 min
+    "2026-02-03": {"n_periods": 4, "duration_s": 720},   # 4 x 12 min
+}
 
 
 # =========================================================================
@@ -54,7 +72,7 @@ class Config:
 
     # --- Seuils de traitement ---
     min_quality: int = 30
-    max_speed: float = 3.5       # m/s
+    max_speed: float = 1.3       # m/s
     teleport_passes: int = 3
 
     # --- Lissage ---
@@ -64,16 +82,25 @@ class Config:
     resample_freq_ms: int = 100  # 10 Hz
     max_interp_gap: float = 2.0  # secondes
 
+    # --- Buts (axe X) et centre Y ---
+    goal_left_x: float = 0.0    # but cote X minimum
+    goal_right_x: float = 25.0  # but cote X maximum
+    goal_center_y: float = 13.25  # centre Y du bassin (largeur 26m / 2)
+
+    # --- Lignes officielles water-polo (depuis chaque but) ---
+    line_2m: float = 2.0   # ligne des 2 m
+    line_6m: float = 6.0   # ligne des 6 m
+
     # --- Etapes a activer ---
     do_quality_filter: bool = True
     do_bounds_filter: bool = True
     do_teleport_filter: bool = True
     do_smooth: bool = True
     do_resample: bool = True
+    do_derived: bool = True
 
     @classmethod
     def from_json(cls, filepath):
-        """Charge une configuration depuis un fichier JSON."""
         with open(filepath, "r") as f:
             data = json.load(f)
         valid_keys = {f.name for f in cls.__dataclass_fields__.values()}
@@ -81,7 +108,6 @@ class Config:
         return cls(**filtered)
 
     def to_json(self, filepath):
-        """Sauvegarde la configuration dans un fichier JSON."""
         with open(filepath, "w") as f:
             json.dump(asdict(self), f, indent=2)
 
@@ -92,7 +118,6 @@ class Config:
 
 @dataclass
 class StepReport:
-    """Rapport d'une etape du pipeline."""
     name: str
     rows_before: int
     rows_after: int
@@ -105,7 +130,6 @@ class StepReport:
 
 @dataclass
 class PipelineReport:
-    """Rapport complet du pipeline."""
     input_file: str
     output_file: str
     config: dict = field(default_factory=dict)
@@ -123,20 +147,56 @@ class PipelineReport:
 
 
 # =========================================================================
+# CHARGEMENT DU MAPPING JOUEURS
+# =========================================================================
+
+def load_players(filepath: str) -> dict:
+    """
+    Charge le fichier JSON de mapping nodeID -> joueur/equipe.
+
+    Format attendu :
+    {
+      "2026-02-03": {
+        "1bb3": {"bonnet": 10, "equipe": "INSEP"},
+        "4103": {"bonnet": 13, "equipe": "INSEP"},
+        ...
+      }
+    }
+    Retourne un dict vide si le fichier n'existe pas.
+    """
+    if not filepath or not os.path.exists(filepath):
+        return {}
+    with open(filepath, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def apply_players(df: pd.DataFrame, players: dict) -> pd.DataFrame:
+    """Ajoute les colonnes 'bonnet' et 'equipe' depuis le mapping joueurs."""
+    if not players:
+        return df
+
+    date_str = str(df["date"].iloc[0])
+    day_map = players.get(date_str, {})
+    if not day_map:
+        log(f"  Aucun mapping joueur trouve pour la date {date_str}")
+        return df
+
+    df["bonnet"] = df["nodeID"].map(lambda nid: day_map.get(nid, {}).get("bonnet"))
+    df["equipe"] = df["nodeID"].map(lambda nid: day_map.get(nid, {}).get("equipe"))
+    mapped = df["bonnet"].notna().sum()
+    log(f"  Mapping joueurs applique : {mapped}/{len(df)} lignes enrichies")
+    return df
+
+
+# =========================================================================
 # FONCTIONS DU PIPELINE
 # =========================================================================
 
 def log(msg):
-    """Affiche un message formate."""
     print(f"  {msg}")
 
 
 def load_csv(filepath):
-    """
-    Charge un fichier CSV et valide sa structure.
-    Compatible avec tout fichier ayant les colonnes requises,
-    independamment de l'ordre ou de la presence de colonnes supplementaires.
-    """
     if not os.path.exists(filepath):
         print(f"ERREUR : fichier introuvable : {filepath}")
         sys.exit(1)
@@ -156,7 +216,6 @@ def load_csv(filepath):
 
     log(f"Fichier charge : {os.path.basename(filepath)}")
     log(f"  {len(df)} lignes, {df['nodeID'].nunique()} tags")
-
     return df
 
 
@@ -165,7 +224,7 @@ def step_drop_nan(df):
     before = len(df)
     df = df.dropna(subset=["positionX", "positionY", "positionZ"]).copy()
     report = StepReport("suppression_nan", before, len(df))
-    log(f"[1/6] NaN supprimes : {report.rows_removed} ({100 * report.rows_removed / before:.1f}%)")
+    log(f"[1/7] NaN supprimes : {report.rows_removed} ({100 * report.rows_removed / before:.1f}%)")
     return df, report
 
 
@@ -173,9 +232,8 @@ def step_filter_quality(df, cfg: Config):
     """Etape 2 : filtre par score de qualite."""
     before = len(df)
     df = df[df["quality"] >= cfg.min_quality].copy()
-    report = StepReport("filtre_qualite", before, len(df),
-                        detail=f"seuil={cfg.min_quality}")
-    log(f"[2/6] Qualite < {cfg.min_quality} : {report.rows_removed} supprimes "
+    report = StepReport("filtre_qualite", before, len(df), detail=f"seuil={cfg.min_quality}")
+    log(f"[2/7] Qualite < {cfg.min_quality} : {report.rows_removed} supprimes "
         f"({100 * report.rows_removed / before:.1f}%)")
     return df, report
 
@@ -193,7 +251,7 @@ def step_filter_bounds(df, cfg: Config):
                         detail=f"X=[{cfg.pool_x_min},{cfg.pool_x_max}] "
                                f"Y=[{cfg.pool_y_min},{cfg.pool_y_max}] "
                                f"Z=[{cfg.pool_z_min},{cfg.pool_z_max}]")
-    log(f"[3/6] Hors piscine : {report.rows_removed} supprimes "
+    log(f"[3/7] Hors piscine : {report.rows_removed} supprimes "
         f"({100 * report.rows_removed / max(before, 1):.2f}%)")
     return df, report
 
@@ -207,7 +265,7 @@ def step_remove_teleportations(df, cfg: Config):
         before_pass = len(df)
         parts = []
 
-        for node_id, group in df.groupby("nodeID"):
+        for _, group in df.groupby("nodeID"):
             group = group.sort_values("time").copy()
             if len(group) < 2:
                 parts.append(group)
@@ -232,7 +290,7 @@ def step_remove_teleportations(df, cfg: Config):
 
     report = StepReport("suppression_teleportations", before_total, len(df),
                         detail=f"seuil={cfg.max_speed}m/s, {p + 1} passes")
-    log(f"[4/6] Teleportations ({p + 1} passes) : {total_removed} supprimes "
+    log(f"[4/7] Teleportations ({p + 1} passes) : {total_removed} supprimes "
         f"({100 * total_removed / max(before_total, 1):.1f}%)")
     return df, report
 
@@ -256,9 +314,8 @@ def step_smooth_median(df, cfg: Config):
         parts.append(group)
 
     df = pd.concat(parts).sort_values(["nodeID", "time"]).reset_index(drop=True)
-    report = StepReport("lissage_median", before, len(df),
-                        detail=f"fenetre={cfg.median_window}")
-    log(f"[5/6] Lissage median (fenetre={cfg.median_window}) applique")
+    report = StepReport("lissage_median", before, len(df), detail=f"fenetre={cfg.median_window}")
+    log(f"[5/7] Lissage median (fenetre={cfg.median_window}) applique")
     return df, report
 
 
@@ -276,10 +333,8 @@ def step_resample_interpolate(df, cfg: Config):
         group = group.set_index("time")
         resampled = group[["positionX", "positionY", "positionZ"]].resample(freq).mean()
 
-        # Interpolation lineaire
         resampled = resampled.interpolate(method="time", limit_direction="forward")
 
-        # Re-masquer les grands trous
         for i in range(1, len(original_times)):
             gap = (original_times[i] - original_times[i - 1]) / np.timedelta64(1, "s")
             if gap > cfg.max_interp_gap:
@@ -289,9 +344,7 @@ def step_resample_interpolate(df, cfg: Config):
 
         resampled = resampled.dropna()
         resampled["nodeID"] = node_id
-        resampled["quality"] = 100
         resampled = resampled.reset_index().rename(columns={"index": "time"})
-
         parts.append(resampled)
 
     df = pd.concat(parts).sort_values(["nodeID", "time"]).reset_index(drop=True)
@@ -299,8 +352,78 @@ def step_resample_interpolate(df, cfg: Config):
     report = StepReport("reechantillonnage", before, len(df),
                         detail=f"freq={hz:.0f}Hz, interp_max={cfg.max_interp_gap}s, "
                                f"delta={'+' if added >= 0 else ''}{added} pts")
-    log(f"[6/6] Reechantillonnage a {hz:.0f} Hz : {len(df)} lignes finales "
+    log(f"[6/7] Reechantillonnage a {hz:.0f} Hz : {len(df)} lignes finales "
         f"(delta: {'+' if added >= 0 else ''}{added})")
+    return df, report
+
+
+def step_add_derived_columns(df, cfg: Config, session_name: str = ""):
+    """Etape 7 : colonnes cinematiques, contextuelles et temporelles."""
+    parts = []
+
+    for _, group in df.groupby("nodeID"):
+        group = group.sort_values("time").copy()
+
+        dx = group["positionX"].diff()
+        dy = group["positionY"].diff()
+        dt = group["time"].diff().dt.total_seconds()
+
+        group["distance_step"] = np.sqrt(dx ** 2 + dy ** 2).round(4)
+        group["distance_cumul"] = group["distance_step"].fillna(0).cumsum().round(4)
+        group["speed"] = (group["distance_step"] / dt).round(4)
+        group["acceleration"] = (group["speed"].diff() / dt).round(4)
+        group["heading"] = np.degrees(np.arctan2(dy, dx)).round(2)
+
+        parts.append(group)
+
+    df = pd.concat(parts).sort_values(["nodeID", "time"]).reset_index(drop=True)
+
+    # --- Zones officielles water-polo (axe X) ---
+    # But gauche : X ~ 0  |  But droit : X ~ 25
+    # Zones depuis chaque but : 2m, 6m, puis transition au centre
+    x2_left = cfg.goal_left_x + cfg.line_2m    # 0 + 2 = 2
+    x6_left = cfg.goal_left_x + cfg.line_6m    # 0 + 6 = 6
+    x6_right = cfg.goal_right_x - cfg.line_6m  # 25 - 6 = 19
+    x2_right = cfg.goal_right_x - cfg.line_2m  # 25 - 2 = 23
+
+    df["zone"] = pd.cut(
+        df["positionX"],
+        bins=[cfg.pool_x_min, x2_left, x6_left, x6_right, x2_right, cfg.pool_x_max],
+        labels=["2m_gauche", "ad_gauche", "transition", "ad_droite", "2m_droite"],
+        include_lowest=True,
+    )
+
+    # --- Distances aux buts (buts sur axe X, centres en Y) ---
+    df["dist_but_gauche"] = np.sqrt(
+        (df["positionX"] - cfg.goal_left_x) ** 2 +
+        (df["positionY"] - cfg.goal_center_y) ** 2
+    ).round(4)
+    df["dist_but_droit"] = np.sqrt(
+        (df["positionX"] - cfg.goal_right_x) ** 2 +
+        (df["positionY"] - cfg.goal_center_y) ** 2
+    ).round(4)
+
+    # --- Colonnes temporelles ---
+    df["date"] = df["time"].dt.date
+    df["elapsed_s"] = (df["time"] - df["time"].min()).dt.total_seconds().round(1)
+    df["session"] = session_name
+
+    # --- Periode de jeu ---
+    date_str = str(df["date"].iloc[0])
+    period_cfg = MATCH_PERIODS.get(date_str)
+    if period_cfg:
+        dur = period_cfg["duration_s"]
+        n = period_cfg["n_periods"]
+        df["period"] = (df["elapsed_s"] // dur + 1).clip(upper=n).astype(int)
+        log(f"  Periodes detectees : {n} x {dur // 60} min pour le {date_str}")
+    else:
+        df["period"] = None
+        log(f"  Aucune configuration de periodes pour le {date_str} — colonne period = None")
+
+    report = StepReport("colonnes_derivees", len(df), len(df),
+                        detail="speed, distance, acceleration, heading, zone, buts, date, elapsed_s, period")
+    log(f"[7/7] Colonnes derivees : distance_step, distance_cumul, speed, acceleration, "
+        f"heading, zone, dist_but_gauche, dist_but_droit, date, elapsed_s, session, period")
     return df, report
 
 
@@ -308,7 +431,7 @@ def step_resample_interpolate(df, cfg: Config):
 # PIPELINE PRINCIPAL
 # =========================================================================
 
-def run_pipeline(input_path, output_path, cfg: Config):
+def run_pipeline(input_path, output_path, cfg: Config, players: dict = None):
     """Execute le pipeline complet sur un fichier."""
     header = f"{'=' * 60}\n  TRAITEMENT : {os.path.basename(input_path)}\n{'=' * 60}"
     print(f"\n{header}\n")
@@ -319,38 +442,40 @@ def run_pipeline(input_path, output_path, cfg: Config):
         config=asdict(cfg),
     )
 
-    # Chargement
     df = load_csv(input_path)
     report.total_rows_in = len(df)
 
-    # Etape 1 : toujours executee
     df, step_r = step_drop_nan(df)
     report.add_step(step_r)
 
-    # Etape 2
     if cfg.do_quality_filter:
         df, step_r = step_filter_quality(df, cfg)
         report.add_step(step_r)
 
-    # Etape 3
     if cfg.do_bounds_filter:
         df, step_r = step_filter_bounds(df, cfg)
         report.add_step(step_r)
 
-    # Etape 4
     if cfg.do_teleport_filter:
         df, step_r = step_remove_teleportations(df, cfg)
         report.add_step(step_r)
 
-    # Etape 5
     if cfg.do_smooth:
         df, step_r = step_smooth_median(df, cfg)
         report.add_step(step_r)
 
-    # Etape 6
     if cfg.do_resample:
         df, step_r = step_resample_interpolate(df, cfg)
         report.add_step(step_r)
+
+    if cfg.do_derived:
+        session_name = os.path.splitext(os.path.basename(input_path))[0]
+        df, step_r = step_add_derived_columns(df, cfg, session_name)
+        report.add_step(step_r)
+
+    # Mapping joueurs (bonnet + equipe)
+    if players:
+        df = apply_players(df, players)
 
     # Resume par tag
     report.total_rows_out = len(df)
@@ -360,21 +485,17 @@ def run_pipeline(input_path, output_path, cfg: Config):
     for node in sorted(df["nodeID"].unique()):
         sub = df[df["nodeID"] == node]
         duration = (sub["time"].max() - sub["time"].min()).total_seconds()
-        nodes_summary[node] = {
-            "points": len(sub),
-            "duration_s": round(duration, 1),
-        }
+        nodes_summary[node] = {"points": len(sub), "duration_s": round(duration, 1)}
         log(f"  {node}: {len(sub)} points, {duration:.0f}s")
 
     report.nodes_summary = nodes_summary
 
-    # Sauvegarde CSV
+    # Sauvegarde Excel (quality supprimee : synthetique apres reechantillonnage)
     os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
-    df.to_csv(output_path, index=False)
+    df.drop(columns=["quality"], errors="ignore").to_excel(output_path, index=False, engine="openpyxl")
     log(f"\nFichier sauvegarde : {output_path}")
 
-    # Sauvegarde rapport JSON
-    report_path = output_path.replace(".csv", "_rapport.json")
+    report_path = output_path.replace(".xlsx", "_rapport.json")
     report.save(report_path)
     log(f"Rapport sauvegarde : {report_path}")
 
@@ -391,36 +512,27 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Exemples :
-  python traitement_uwb.py --input t1.csv --output t1_clean.csv
+  python traitement_uwb.py --input t1.csv --output t1_clean.xlsx
+  python traitement_uwb.py --input t1.csv --output t1_clean.xlsx --players players.json
   python traitement_uwb.py --input t1.csv t2.csv --output-dir ./clean/
-  python traitement_uwb.py --input t1.csv --output t1_clean.csv --quality 40 --speed 3.0
-  python traitement_uwb.py --input t1.csv --output t1_clean.csv --config config.json
+  python traitement_uwb.py --input t1.csv --output t1_clean.xlsx --quality 40 --speed 3.0
+  python traitement_uwb.py --input t1.csv --output t1_clean.xlsx --config config.json
   python traitement_uwb.py --generate-config config.json
         """
     )
 
-    parser.add_argument(
-        "--input", nargs="+",
-        help="Un ou plusieurs fichiers CSV a traiter"
-    )
-    parser.add_argument(
-        "--output", type=str, default=None,
-        help="Fichier CSV de sortie (pour un seul fichier en entree)"
-    )
-    parser.add_argument(
-        "--output-dir", type=str, default=None,
-        help="Repertoire de sortie (pour plusieurs fichiers, suffixe '_clean')"
-    )
-    parser.add_argument(
-        "--config", type=str, default=None,
-        help="Fichier JSON de configuration (surcharge les valeurs par defaut)"
-    )
-    parser.add_argument(
-        "--generate-config", type=str, default=None,
-        help="Genere un fichier de configuration par defaut et quitte"
-    )
+    parser.add_argument("--input", nargs="+", help="Un ou plusieurs fichiers CSV a traiter")
+    parser.add_argument("--output", type=str, default=None,
+                        help="Fichier de sortie .xlsx (pour un seul fichier en entree)")
+    parser.add_argument("--output-dir", type=str, default=None,
+                        help="Repertoire de sortie (pour plusieurs fichiers)")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Fichier JSON de configuration")
+    parser.add_argument("--players", type=str, default=None,
+                        help="Fichier JSON de mapping nodeID -> joueur/equipe")
+    parser.add_argument("--generate-config", type=str, default=None,
+                        help="Genere un fichier de configuration par defaut et quitte")
 
-    # Parametres individuels (surchargent le fichier de config)
     parser.add_argument("--quality", type=int, default=None, help="Score qualite minimum")
     parser.add_argument("--speed", type=float, default=None, help="Vitesse max (m/s)")
     parser.add_argument("--median-window", type=int, default=None, help="Fenetre du filtre median")
@@ -431,18 +543,12 @@ Exemples :
     parser.add_argument("--no-quality", action="store_true", help="Desactiver le filtre qualite")
     parser.add_argument("--no-bounds", action="store_true", help="Desactiver le filtre geographique")
     parser.add_argument("--no-teleport", action="store_true", help="Desactiver le filtre teleportation")
-
-    # Limites du terrain
-    parser.add_argument("--pool-x", nargs=2, type=float, default=None, metavar=("MIN", "MAX"),
-                        help="Limites X du bassin")
-    parser.add_argument("--pool-y", nargs=2, type=float, default=None, metavar=("MIN", "MAX"),
-                        help="Limites Y du bassin")
-    parser.add_argument("--pool-z", nargs=2, type=float, default=None, metavar=("MIN", "MAX"),
-                        help="Limites Z du bassin")
+    parser.add_argument("--pool-x", nargs=2, type=float, default=None, metavar=("MIN", "MAX"))
+    parser.add_argument("--pool-y", nargs=2, type=float, default=None, metavar=("MIN", "MAX"))
+    parser.add_argument("--pool-z", nargs=2, type=float, default=None, metavar=("MIN", "MAX"))
 
     args = parser.parse_args()
 
-    # Generation de config par defaut
     if args.generate_config:
         cfg = Config()
         cfg.to_json(args.generate_config)
@@ -452,13 +558,11 @@ Exemples :
     if not args.input:
         parser.error("--input est requis (sauf avec --generate-config)")
 
-    # Construction de la config
     cfg = Config()
     if args.config:
         cfg = Config.from_json(args.config)
         print(f"Configuration chargee depuis : {args.config}")
 
-    # Surcharges CLI
     if args.quality is not None:
         cfg.min_quality = args.quality
     if args.speed is not None:
@@ -486,23 +590,23 @@ Exemples :
     if args.pool_z:
         cfg.pool_z_min, cfg.pool_z_max = args.pool_z
 
-    # Traitement
+    players = load_players(args.players) if args.players else {}
+
     if len(args.input) == 1 and args.output:
-        run_pipeline(args.input[0], args.output, cfg)
+        run_pipeline(args.input[0], args.output, cfg, players)
     elif args.output_dir:
         os.makedirs(args.output_dir, exist_ok=True)
         for filepath in args.input:
             basename = os.path.splitext(os.path.basename(filepath))[0]
-            out_path = os.path.join(args.output_dir, f"{basename}_clean.csv")
-            run_pipeline(filepath, out_path, cfg)
+            out_path = os.path.join(args.output_dir, f"{basename}_clean.xlsx")
+            run_pipeline(filepath, out_path, cfg, players)
     elif len(args.input) == 1:
         basename = os.path.splitext(args.input[0])[0]
-        run_pipeline(args.input[0], f"{basename}_clean.csv", cfg)
+        run_pipeline(args.input[0], f"{basename}_clean.xlsx", cfg, players)
     else:
-        # Plusieurs fichiers sans --output-dir : on met le suffixe _clean
         for filepath in args.input:
             basename = os.path.splitext(filepath)[0]
-            run_pipeline(filepath, f"{basename}_clean.csv", cfg)
+            run_pipeline(filepath, f"{basename}_clean.xlsx", cfg, players)
 
 
 if __name__ == "__main__":

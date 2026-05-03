@@ -1,0 +1,56 @@
+{
+  "_notice": "Remplacez les null par les vrais numeros de bonnet. La cle est le nodeID hexadecimal du tag.",
+  "_notice2": "Pour connaitre quel nodeID correspond a quel Tag physique, croisez l'ordre de demarrage des tags avec les logs bruts.",
+
+  "2026-01-13": {
+    "_INSEP_tags_1_a_6": "bonnets 12, 10, 3, 8, 15, 6",
+    "_invite_tags_7_a_12": "bonnets 4, 2, 9, 5, 11, 7",
+    "NODE_HEX_1": {"bonnet": null, "equipe": "INSEP"},
+    "NODE_HEX_2": {"bonnet": null, "equipe": "INSEP"},
+    "NODE_HEX_3": {"bonnet": null, "equipe": "INSEP"},
+    "NODE_HEX_4": {"bonnet": null, "equipe": "INSEP"},
+    "NODE_HEX_5": {"bonnet": null, "equipe": "INSEP"},
+    "NODE_HEX_6": {"bonnet": null, "equipe": "INSEP"},
+    "NODE_HEX_7": {"bonnet": null, "equipe": "invite"},
+    "NODE_HEX_8": {"bonnet": null, "equipe": "invite"},
+    "NODE_HEX_9": {"bonnet": null, "equipe": "invite"},
+    "NODE_HEX_10": {"bonnet": null, "equipe": "invite"},
+    "NODE_HEX_11": {"bonnet": null, "equipe": "invite"},
+    "NODE_HEX_12": {"bonnet": null, "equipe": "invite"}
+  },
+
+  "2026-01-20": {
+    "_INSEP_tags_1_a_6": "bonnets 7, 2, 3, 8, 12, 6",
+    "_invite_tags_7_a_12": "bonnets 2, 4, 9, 8, 11, 12",
+    "NODE_HEX_1": {"bonnet": null, "equipe": "INSEP"},
+    "NODE_HEX_2": {"bonnet": null, "equipe": "INSEP"},
+    "NODE_HEX_3": {"bonnet": null, "equipe": "INSEP"},
+    "NODE_HEX_4": {"bonnet": null, "equipe": "INSEP"},
+    "NODE_HEX_5": {"bonnet": null, "equipe": "INSEP"},
+    "NODE_HEX_6": {"bonnet": null, "equipe": "INSEP"},
+    "NODE_HEX_7": {"bonnet": null, "equipe": "invite"},
+    "NODE_HEX_8": {"bonnet": null, "equipe": "invite"},
+    "NODE_HEX_9": {"bonnet": null, "equipe": "invite"},
+    "NODE_HEX_10": {"bonnet": null, "equipe": "invite"},
+    "NODE_HEX_11": {"bonnet": null, "equipe": "invite"},
+    "NODE_HEX_12": {"bonnet": null, "equipe": "invite"}
+  },
+
+  "2026-02-03": {
+    "_INSEP_tags_1_a_6": "bonnets 10, 13, 7, 4, 9, 6",
+    "_invite_tags_7_a_12": "bonnets 2, 4, 3, 10, 11, 14",
+    "_nodeIDs_match_030226": "1bb3, 4103, 4110, 49a2, 4c0f, 5720, 87b0, cf06, d238, d284, d2ad, d43a",
+    "1bb3": {"bonnet": null, "equipe": null},
+    "4103": {"bonnet": null, "equipe": null},
+    "4110": {"bonnet": null, "equipe": null},
+    "49a2": {"bonnet": null, "equipe": null},
+    "4c0f": {"bonnet": null, "equipe": null},
+    "5720": {"bonnet": null, "equipe": null},
+    "87b0": {"bonnet": null, "equipe": null},
+    "cf06": {"bonnet": null, "equipe": null},
+    "d238": {"bonnet": null, "equipe": null},
+    "d284": {"bonnet": null, "equipe": null},
+    "d2ad": {"bonnet": null, "equipe": null},
+    "d43a": {"bonnet": null, "equipe": null}
+  }
+}
