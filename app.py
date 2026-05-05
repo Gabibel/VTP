@@ -9,6 +9,7 @@
 import sys
 import os
 import io
+import pickle
 from contextlib import redirect_stdout
 
 import streamlit as st
@@ -71,6 +72,71 @@ DOSSIERS_MATCHS = {
     "03/02/2026": "dwm_positions_030226",
 }
 
+# Dossier de sauvegarde locale (créé automatiquement s'il n'existe pas)
+SAUVEGARDE_DIR = "sauvegarde"
+
+
+# ==============================================================================
+# PERSISTANCE — sauvegarde et rechargement entre sessions
+# ==============================================================================
+
+def sauvegarder_session():
+    """
+    Écrit sur le disque les données et la configuration actuelles.
+    Appelé dès qu'un élément important change (import, mapping, action).
+
+    Fichiers créés dans le dossier 'sauvegarde/' :
+        donnees.pkl  — DataFrame nettoyé (format pickle, préserve tous les types)
+        meta.json    — match sélectionné, mapping joueurs, bibliothèque d'actions
+    """
+    os.makedirs(SAUVEGARDE_DIR, exist_ok=True)
+
+    # Sauvegarde du DataFrame
+    if st.session_state.donnees is not None:
+        with open(os.path.join(SAUVEGARDE_DIR, "donnees.pkl"), "wb") as f:
+            pickle.dump(st.session_state.donnees, f)
+
+    # Sauvegarde de la configuration (match, mapping, actions)
+    meta = {
+        "match_selec":     st.session_state.match_selec,
+        "mapping_joueurs": st.session_state.mapping_joueurs,
+        "actions":         st.session_state.actions,
+    }
+    with open(os.path.join(SAUVEGARDE_DIR, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2, default=str)
+
+
+def charger_session():
+    """
+    Recharge depuis le disque les données et la configuration d'une session précédente.
+    Appelé une seule fois au démarrage de chaque nouvelle session navigateur.
+    Ne remplace rien si des données existent déjà en mémoire.
+    """
+    chemin_donnees = os.path.join(SAUVEGARDE_DIR, "donnees.pkl")
+    chemin_meta    = os.path.join(SAUVEGARDE_DIR, "meta.json")
+
+    # Recharger le DataFrame
+    if st.session_state.donnees is None and os.path.exists(chemin_donnees):
+        try:
+            with open(chemin_donnees, "rb") as f:
+                st.session_state.donnees = pickle.load(f)
+        except Exception:
+            pass  # Fichier corrompu ou incompatible : on ignore silencieusement
+
+    # Recharger la configuration
+    if os.path.exists(chemin_meta):
+        try:
+            with open(chemin_meta, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            if st.session_state.match_selec is None:
+                st.session_state.match_selec = meta.get("match_selec")
+            if not st.session_state.mapping_joueurs:
+                st.session_state.mapping_joueurs = meta.get("mapping_joueurs", {})
+            if not st.session_state.actions:
+                st.session_state.actions = meta.get("actions", [])
+        except Exception:
+            pass
+
 
 # ==============================================================================
 # DONNÉES PARTAGÉES ENTRE LES PAGES
@@ -87,6 +153,12 @@ valeurs_defaut = {
 for cle, valeur in valeurs_defaut.items():
     if cle not in st.session_state:
         st.session_state[cle] = valeur
+
+# Chargement depuis le disque une seule fois par session navigateur.
+# Le flag "session_chargee" évite de recharger à chaque rerun Streamlit.
+if "session_chargee" not in st.session_state:
+    charger_session()
+    st.session_state["session_chargee"] = True
 
 
 # ==============================================================================
@@ -252,6 +324,22 @@ with st.sidebar:
             st.session_state.page = nom_page
             st.rerun()
 
+    # Indicateur de sauvegarde + bouton de réinitialisation
+    chemin_meta = os.path.join(SAUVEGARDE_DIR, "meta.json")
+    if os.path.exists(chemin_meta):
+        st.markdown("---")
+        st.caption("💾 Session sauvegardée localement.")
+        if st.button("Effacer la sauvegarde", use_container_width=True):
+            # Supprimer les fichiers de sauvegarde
+            for fichier_svg in ["donnees.pkl", "meta.json"]:
+                chemin = os.path.join(SAUVEGARDE_DIR, fichier_svg)
+                if os.path.exists(chemin):
+                    os.remove(chemin)
+            # Réinitialiser la session en mémoire
+            for cle, valeur in valeurs_defaut.items():
+                st.session_state[cle] = valeur
+            st.rerun()
+
 
 # ==============================================================================
 # PAGE 1 — CONFIGURATION & DONNÉES
@@ -281,6 +369,7 @@ if st.session_state.page == "Configuration & Données":
             # Fichier déjà nettoyé : chargement direct sans pipeline
             df_charge = pd.read_excel(fichier)
             st.session_state.donnees = df_charge
+            sauvegarder_session()
             st.success(
                 f"Fichier XLSX chargé : **{fichier.name}** "
                 f"— {len(df_charge):,} lignes, {df_charge['nodeID'].nunique()} joueurs"
@@ -326,6 +415,7 @@ if st.session_state.page == "Configuration & Données":
                         df_clean, logs = executer_pipeline(df_brut, qualite, vitesse, fenetre)
 
                     st.session_state.donnees = df_clean
+                    sauvegarder_session()
                     st.success(f"Nettoyage terminé — {len(df_clean):,} lignes conservées")
 
                     with st.expander("Détail des étapes"):
@@ -359,6 +449,7 @@ if st.session_state.page == "Configuration & Données":
                     if fichiers_xlsx:
                         chemin = os.path.join(dossier, fichiers_xlsx[0])
                         st.session_state.donnees = pd.read_excel(chemin)
+                        sauvegarder_session()
                         st.rerun()
 
     if st.session_state.match_selec:
@@ -405,6 +496,7 @@ if st.session_state.page == "Configuration & Données":
 
     st.markdown("")
     if st.button("Enregistrer la composition", type="primary"):
+        sauvegarder_session()
         st.success("Composition enregistrée !")
 
     st.markdown("---")
@@ -587,6 +679,7 @@ elif st.session_state.page == "Replay & Vue Globale":
                     "commentaire": commentaire,
                 })
                 st.session_state.show_form = False
+                sauvegarder_session()
                 st.rerun()
 
             if col_non.button("Annuler"):
